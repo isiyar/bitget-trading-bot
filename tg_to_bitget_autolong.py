@@ -45,7 +45,7 @@ CONNECT_TIMEOUT = float(os.getenv("CONNECT_TIMEOUT", "1.0"))
 KEEPALIVE_SECONDS = int(os.getenv("KEEPALIVE_SECONDS", "30"))
 
 PAIR_RE = re.compile(
-    r"^\[UPBIT LISTING\].*?\((?P<base>[A-Z0-9]{2,10})\).*?\((?=[^)]*KRW)[^)]*\)",
+    r"^\[UPBIT LISTING\].*?\((?P<base>[A-Z0-9]{2,10})\).*?KRW",
     re.IGNORECASE,
 )
 
