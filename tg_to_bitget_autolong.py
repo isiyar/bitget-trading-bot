@@ -283,9 +283,12 @@ async def connect_websocket():
                             message = await websocket.recv()
                             try:
                                 message_data = json.loads(message)
-                                if message_data["source"] == "UPBIT":
-                                    _log(f"Received message: {message_data}")
-                                    await handle_signal(session, message_data["title"])
+                                _log(f"Received message: {message_data}")
+                                if "source" in message_data:
+                                    if message_data["source"] == "UPBIT":
+                                        await handle_signal(
+                                            session, message_data["title"]
+                                        )
                             except json.JSONDecodeError:
                                 _log(f"Received non-JSON message: {message}")
                         except websockets.exceptions.ConnectionClosedError:
