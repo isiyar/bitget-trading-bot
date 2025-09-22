@@ -7,6 +7,8 @@ import hashlib
 import base64
 import re
 import math
+import websockets
+import json
 from typing import Optional, Tuple
 
 try:
@@ -16,15 +18,12 @@ try:
 except Exception:
     pass
 
-from telethon import TelegramClient, events
 import aiohttp
 from dotenv import load_dotenv
 
 load_dotenv()
 
-TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
-TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
-TELEGRAM_CHANNEL = int(os.getenv("TELEGRAM_CHANNEL", ""))
+WS_URL = os.getenv("WS_URL", "")
 
 BITGET_API_KEY = os.getenv("BITGET_API_KEY", "")
 BITGET_API_SECRET = os.getenv("BITGET_API_SECRET", "")
@@ -45,7 +44,7 @@ CONNECT_TIMEOUT = float(os.getenv("CONNECT_TIMEOUT", "1.0"))
 KEEPALIVE_SECONDS = int(os.getenv("KEEPALIVE_SECONDS", "30"))
 
 PAIR_RE = re.compile(
-    r"^\[UPBIT LISTING\].*?\((?P<base>[A-Z0-9]{2,10})\).*?KRW",
+    r"\((?P<base>[A-Z0-9]{2,10})\).*?KRW",
     re.IGNORECASE,
 )
 
@@ -257,16 +256,8 @@ async def handle_signal(session: aiohttp.ClientSession, text: str):
         _log("order error:", e)
 
 
-async def main():
-    assert (
-        TELEGRAM_API_ID and TELEGRAM_API_HASH and TELEGRAM_CHANNEL
-    ), "Set Telegram credentials and channel"
-    assert (
-        BITGET_API_KEY and BITGET_API_SECRET and BITGET_PASSPHRASE
-    ), "Set Bitget API keys"
-
-    client = TelegramClient("tg_autolong_session", TELEGRAM_API_ID, TELEGRAM_API_HASH)
-    await client.start()
+async def connect_websocket():
+    retry_delay = 1
 
     timeout = aiohttp.ClientTimeout(
         total=None,
@@ -282,25 +273,46 @@ async def main():
     )
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
 
-        @client.on(events.NewMessage(chats=TELEGRAM_CHANNEL))
-        async def on_new_message(event):
-            text = event.raw_text or ""
-            print(f"Message time - {_ts_ms()}")
-            await handle_signal(session, text)
+        while True:
+            try:
+                async with websockets.connect(WS_URL) as websocket:
+                    _log("WebSocket connection established")
 
-        _log(
-            "Bot is running. DRY_RUN=",
-            DRY_RUN,
-            " MODE=",
-            MODE,
-            " Channel=",
-            TELEGRAM_CHANNEL,
-        )
-        await client.run_until_disconnected()
+                    while True:
+                        try:
+                            message = await websocket.recv()
+                            try:
+                                message_data = json.loads(message)
+                                if message_data["source"] == "UPBIT":
+                                    _log(f"Received message: {message_data}")
+                                    await handle_signal(session, message_data["title"])
+                            except json.JSONDecodeError:
+                                _log(f"Received non-JSON message: {message}")
+                        except websockets.exceptions.ConnectionClosedError:
+                            _log("WebSocket connection closed. Retrying...")
+                            break
+
+            except (
+                websockets.exceptions.InvalidURI,
+                websockets.exceptions.InvalidHandshake,
+            ):
+                _log(
+                    f"Failed to connect to WebSocket server. Retrying in {retry_delay} seconds..."
+                )
+
+            except ConnectionRefusedError:
+                _log(f"Connection refused. Retrying in {retry_delay} seconds...")
+
+            except Exception as e:
+                _log(f"Unexpected error: {e}. Retrying in {retry_delay} seconds...")
+
+            retry_delay = 1
+
+            await asyncio.sleep(retry_delay)
 
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        asyncio.run(connect_websocket())
     except KeyboardInterrupt:
         pass
