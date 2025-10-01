@@ -285,7 +285,7 @@ async def connect_websocket():
                                 message_data = json.loads(message)
                                 _log(f"Received message: {message_data}")
                                 if "source" in message_data:
-                                    if message_data["source"] == "UPBIT":
+                                    if "UPBIT" in message_data["source"]:
                                         await handle_signal(
                                             session, message_data["title"]
                                         )
