@@ -3,7 +3,6 @@ WORKDIR /app
 COPY .env .
 COPY tg_to_bitget_autolong.py .
 COPY requirements.txt .
-COPY tg_autolong_session.session .
 RUN pip install -r requirements.txt
 
 CMD ["python", "tg_to_bitget_autolong.py"]

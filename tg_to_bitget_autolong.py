@@ -7,6 +7,8 @@ import hashlib
 import base64
 import re
 import math
+import websockets
+import json
 from typing import Optional, Tuple
 
 try:
@@ -16,15 +18,12 @@ try:
 except Exception:
     pass
 
-from telethon import TelegramClient, events
 import aiohttp
 from dotenv import load_dotenv
 
 load_dotenv()
 
-TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
-TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
-TELEGRAM_CHANNEL = int(os.getenv("TELEGRAM_CHANNEL", ""))
+WS_URL = os.getenv("WS_URL", "")
 
 BITGET_API_KEY = os.getenv("BITGET_API_KEY", "")
 BITGET_API_SECRET = os.getenv("BITGET_API_SECRET", "")
@@ -45,7 +44,7 @@ CONNECT_TIMEOUT = float(os.getenv("CONNECT_TIMEOUT", "1.0"))
 KEEPALIVE_SECONDS = int(os.getenv("KEEPALIVE_SECONDS", "30"))
 
 PAIR_RE = re.compile(
-    r"^\[UPBIT LISTING\].*?\((?P<base>[A-Z0-9]{2,10})\).*?KRW",
+    r"\((?P<base>[A-Z0-9]{2,10})\).*?KRW",
     re.IGNORECASE,
 )
 
@@ -212,6 +211,27 @@ async def place_take_profit(
         return await r.json()
 
 
+async def get_symbol_precision(session: aiohttp.ClientSession, symbol: str) -> int:
+    try:
+        url = f"{BASE_URL}/api/v2/mix/market/contracts?productType=USDT-FUTURES"
+        async with session.get(url, timeout=HTTP_TIMEOUT) as r:
+            j = await r.json()
+            data = j.get("data", [])
+            for item in data:
+                if item["symbol"] == symbol:
+                    return int(item.get("sizeScale", 0))
+    except Exception as e:
+        _log(f"precision error: {e}")
+    return 0
+
+
+def adjust_size_precision(size: float, precision: int) -> str:
+    factor = 10**precision
+    adjusted = math.floor(size * factor) / factor
+    fmt = f"{{:.{precision}f}}"
+    return fmt.format(adjusted)
+
+
 async def handle_signal(session: aiohttp.ClientSession, text: str):
     pair = normalize_symbol_from_text(text)
     if not pair:
@@ -236,20 +256,30 @@ async def handle_signal(session: aiohttp.ClientSession, text: str):
             if last_price:
                 tp_price_first_part = floor_to_n_decimals(last_price * 1.15, 4)
                 tp_price_second_part = floor_to_n_decimals(last_price * 1.2, 4)
+                precision = await get_symbol_precision(session, sym)
+                half_size = float(size) / 2
+                tp_first_size = adjust_size_precision(half_size, precision)
+                tp_second_size = adjust_size_precision(half_size, precision)
                 tp_first_res = await place_take_profit(
                     session,
                     sym,
-                    str(floor_to_n_decimals(float(size) / 2, 1)),
+                    tp_first_size,
                     tp_price_first_part,
                 )
-                _log(f"[MIX] TP {tp_price_first_part:.4f} =>", tp_first_res)
+                _log(
+                    f"[MIX] TP {tp_price_first_part:.4f} size={tp_first_size} =>",
+                    tp_first_res,
+                )
                 tp_second_res = await place_take_profit(
                     session,
                     sym,
-                    str(floor_to_n_decimals(float(size) / 2, 1)),
+                    tp_second_size,
                     tp_price_second_part,
                 )
-                _log(f"[MIX] TP {tp_price_second_part:.4f} =>", tp_second_res)
+                _log(
+                    f"[MIX] TP {tp_price_second_part:.4f} size={tp_second_size} =>",
+                    tp_second_res,
+                )
         else:
             res = await place_spot_market_buy(session, sym, QUOTE_USDT)
             _log(f"[SPOT] BUY {sym} quote={QUOTE_USDT} =>", res)
@@ -257,16 +287,8 @@ async def handle_signal(session: aiohttp.ClientSession, text: str):
         _log("order error:", e)
 
 
-async def main():
-    assert (
-        TELEGRAM_API_ID and TELEGRAM_API_HASH and TELEGRAM_CHANNEL
-    ), "Set Telegram credentials and channel"
-    assert (
-        BITGET_API_KEY and BITGET_API_SECRET and BITGET_PASSPHRASE
-    ), "Set Bitget API keys"
-
-    client = TelegramClient("tg_autolong_session", TELEGRAM_API_ID, TELEGRAM_API_HASH)
-    await client.start()
+async def connect_websocket():
+    retry_delay = 1
 
     timeout = aiohttp.ClientTimeout(
         total=None,
@@ -281,26 +303,49 @@ async def main():
         keepalive_timeout=KEEPALIVE_SECONDS,
     )
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+        while True:
+            try:
+                async with websockets.connect(WS_URL) as websocket:
+                    _log("WebSocket connection established")
 
-        @client.on(events.NewMessage(chats=TELEGRAM_CHANNEL))
-        async def on_new_message(event):
-            text = event.raw_text or ""
-            print(f"Message time - {_ts_ms()}")
-            await handle_signal(session, text)
+                    while True:
+                        try:
+                            message = await websocket.recv()
+                            try:
+                                message_data = json.loads(message)
+                                _log(f"Received message: {message_data}")
+                                if "source" in message_data:
+                                    if "UPBIT" in message_data["source"]:
+                                        await handle_signal(
+                                            session, message_data["title"]
+                                        )
+                            except json.JSONDecodeError:
+                                _log(f"Received non-JSON message: {message}")
+                        except websockets.exceptions.ConnectionClosedError:
+                            _log("WebSocket connection closed. Retrying...")
+                            break
 
-        _log(
-            "Bot is running. DRY_RUN=",
-            DRY_RUN,
-            " MODE=",
-            MODE,
-            " Channel=",
-            TELEGRAM_CHANNEL,
-        )
-        await client.run_until_disconnected()
+            except (
+                websockets.exceptions.InvalidURI,
+                websockets.exceptions.InvalidHandshake,
+            ):
+                _log(
+                    f"Failed to connect to WebSocket server. Retrying in {retry_delay} seconds..."
+                )
+
+            except ConnectionRefusedError:
+                _log(f"Connection refused. Retrying in {retry_delay} seconds...")
+
+            except Exception as e:
+                _log(f"Unexpected error: {e}. Retrying in {retry_delay} seconds...")
+
+            retry_delay = 1
+
+            await asyncio.sleep(retry_delay)
 
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        asyncio.run(connect_websocket())
     except KeyboardInterrupt:
         pass
