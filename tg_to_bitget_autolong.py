@@ -211,6 +211,27 @@ async def place_take_profit(
         return await r.json()
 
 
+async def get_symbol_precision(session: aiohttp.ClientSession, symbol: str) -> int:
+    try:
+        url = f"{BASE_URL}/api/v2/mix/market/contracts?productType=USDT-FUTURES"
+        async with session.get(url, timeout=HTTP_TIMEOUT) as r:
+            j = await r.json()
+            data = j.get("data", [])
+            for item in data:
+                if item["symbol"] == symbol:
+                    return int(item.get("sizeScale", 0))
+    except Exception as e:
+        _log(f"precision error: {e}")
+    return 0
+
+
+def adjust_size_precision(size: float, precision: int) -> str:
+    factor = 10**precision
+    adjusted = math.floor(size * factor) / factor
+    fmt = f"{{:.{precision}f}}"
+    return fmt.format(adjusted)
+
+
 async def handle_signal(session: aiohttp.ClientSession, text: str):
     pair = normalize_symbol_from_text(text)
     if not pair:
@@ -235,20 +256,30 @@ async def handle_signal(session: aiohttp.ClientSession, text: str):
             if last_price:
                 tp_price_first_part = floor_to_n_decimals(last_price * 1.15, 4)
                 tp_price_second_part = floor_to_n_decimals(last_price * 1.2, 4)
+                precision = await get_symbol_precision(session, sym)
+                half_size = float(size) / 2
+                tp_first_size = adjust_size_precision(half_size, precision)
+                tp_second_size = adjust_size_precision(half_size, precision)
                 tp_first_res = await place_take_profit(
                     session,
                     sym,
-                    str(floor_to_n_decimals(float(size) / 2, 1)),
+                    tp_first_size,
                     tp_price_first_part,
                 )
-                _log(f"[MIX] TP {tp_price_first_part:.4f} =>", tp_first_res)
+                _log(
+                    f"[MIX] TP {tp_price_first_part:.4f} size={tp_first_size} =>",
+                    tp_first_res,
+                )
                 tp_second_res = await place_take_profit(
                     session,
                     sym,
-                    str(floor_to_n_decimals(float(size) / 2, 1)),
+                    tp_second_size,
                     tp_price_second_part,
                 )
-                _log(f"[MIX] TP {tp_price_second_part:.4f} =>", tp_second_res)
+                _log(
+                    f"[MIX] TP {tp_price_second_part:.4f} size={tp_second_size} =>",
+                    tp_second_res,
+                )
         else:
             res = await place_spot_market_buy(session, sym, QUOTE_USDT)
             _log(f"[SPOT] BUY {sym} quote={QUOTE_USDT} =>", res)
@@ -272,7 +303,6 @@ async def connect_websocket():
         keepalive_timeout=KEEPALIVE_SECONDS,
     )
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
-
         while True:
             try:
                 async with websockets.connect(WS_URL) as websocket:
