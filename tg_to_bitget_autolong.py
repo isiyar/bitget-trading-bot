@@ -254,8 +254,8 @@ async def handle_signal(session: aiohttp.ClientSession, text: str):
 
             last_price = await get_ticker(session, sym, mix=True)
             if last_price:
-                tp_price_first_part = floor_to_n_decimals(last_price * 1.15, 4)
-                tp_price_second_part = floor_to_n_decimals(last_price * 1.2, 4)
+                tp_price_first_part = floor_to_n_decimals(last_price * 1.25, 4)
+                tp_price_second_part = floor_to_n_decimals(last_price * 1.3, 4)
                 precision = await get_symbol_precision(session, sym)
                 half_size = float(size) / 2
                 tp_first_size = adjust_size_precision(half_size, precision)
