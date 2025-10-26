@@ -23,6 +23,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+ENV_HOLDER = os.getenv("ENV_HOLDER")
+
 WS_URL = os.getenv("WS_URL", "")
 
 BITGET_API_KEY = os.getenv("BITGET_API_KEY", "")
@@ -254,8 +256,8 @@ async def handle_signal(session: aiohttp.ClientSession, text: str):
 
             last_price = await get_ticker(session, sym, mix=True)
             if last_price:
-                tp_price_first_part = floor_to_n_decimals(last_price * 1.15, 4)
-                tp_price_second_part = floor_to_n_decimals(last_price * 1.2, 4)
+                tp_price_first_part = floor_to_n_decimals(last_price * 1.25, 4)
+                tp_price_second_part = floor_to_n_decimals(last_price * 1.3, 4)
                 precision = await get_symbol_precision(session, sym)
                 half_size = float(size) / 2
                 tp_first_size = adjust_size_precision(half_size, precision)
@@ -346,6 +348,7 @@ async def connect_websocket():
 
 if __name__ == "__main__":
     try:
+        _log(ENV_HOLDER)
         asyncio.run(connect_websocket())
     except KeyboardInterrupt:
         pass
