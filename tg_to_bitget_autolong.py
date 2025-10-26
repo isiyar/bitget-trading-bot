@@ -23,6 +23,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+ENV_HOLDER = os.getenv("ENV_HOLDER")
+
 WS_URL = os.getenv("WS_URL", "")
 
 BITGET_API_KEY = os.getenv("BITGET_API_KEY", "")
@@ -346,6 +348,7 @@ async def connect_websocket():
 
 if __name__ == "__main__":
     try:
+        _log(ENV_HOLDER)
         asyncio.run(connect_websocket())
     except KeyboardInterrupt:
         pass
